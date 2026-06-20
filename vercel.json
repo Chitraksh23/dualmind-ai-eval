@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "name": "dualmind-ai-eval",
+  "builds": [
+    {
+      "src": "frontend/index.html",
+      "use": "@vercel/static"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "frontend/index.html"
+    }
+  ]
+}
