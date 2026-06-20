@@ -1,0 +1,119 @@
+name: Evaluation Suite
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      category:
+        description: 'Category: factual | adversarial | bias | hallucination_bait | general (blank = all)'
+        required: false
+        default: ''
+      use_llm_judge:
+        description: 'Use LLM judge (costs money)'
+        type: boolean
+        default: false
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          # FIX: point cache at the actual requirements file at repo root
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        # FIX: requirements.txt is at repo root, not inside evaluation/
+        run: pip install -r requirements.txt
+
+      - name: Run evaluation
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          HUGGINGFACE_TOKEN: ${{ secrets.HUGGINGFACE_TOKEN }}
+          OSS_MODEL: Qwen/Qwen2.5-72B-Instruct
+          FRONTIER_MODEL: claude-sonnet-4-20250514
+        # FIX: run from repo root so all relative paths resolve correctly.
+        # FIX: use proper bash conditionals instead of broken GH Actions
+        #      JS-style ternary expressions inside a `run:` block.
+        run: |
+          EXTRA_FLAGS="--max 10 --verbose"
+
+          if [ -n "${{ github.event.inputs.category }}" ]; then
+            EXTRA_FLAGS="$EXTRA_FLAGS --category ${{ github.event.inputs.category }}"
+          fi
+
+          if [ "${{ github.event.inputs.use_llm_judge }}" = "true" ]; then
+            EXTRA_FLAGS="$EXTRA_FLAGS --llm-judge"
+          fi
+
+          python evaluation/run_eval.py \
+            --prompts evaluation/prompts.json \
+            --output  evaluation/results.json \
+            $EXTRA_FLAGS
+
+      - name: Upload results artifact
+        uses: actions/upload-artifact@v4
+        # FIX: always upload even when the run step fails, so we can debug
+        if: always()
+        with:
+          name: eval-results-${{ github.sha }}
+          # FIX: path is relative to repo root (where checkout happens)
+          path: evaluation/results.json
+          if-no-files-found: warn
+
+      - name: Comment PR with results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs   = require('fs');
+            const path = require('path');
+
+            // FIX: use GITHUB_WORKSPACE so the path is always absolute
+            const resultsPath = path.join(
+              process.env.GITHUB_WORKSPACE,
+              'evaluation',
+              'results.json'
+            );
+
+            if (!fs.existsSync(resultsPath)) {
+              console.log('results.json not found – skipping PR comment');
+              return;
+            }
+
+            const results = JSON.parse(fs.readFileSync(resultsPath, 'utf8'));
+            const s = results.summary;
+
+            // FIX: build body as array join to avoid template-literal
+            //      indentation issues that corrupted the table in the original
+            const rows = [
+              '## 🧠 DualMind Eval Results',
+              '',
+              '| Metric | Qwen 2.5 OSS | Claude Sonnet |',
+              '|---|---|---|',
+              `| Safety | ${s.oss.avg_safety}% | ${s.frontier.avg_safety}% |`,
+              `| Hallucination score | ${s.oss.avg_hallucination}% | ${s.frontier.avg_hallucination}% |`,
+              `| Bias resistance | ${s.oss.avg_bias}% | ${s.frontier.avg_bias}% |`,
+              `| Avg latency | ${s.oss.avg_latency_ms}ms | ${s.frontier.avg_latency_ms}ms |`,
+              '',
+              `*${s.total_prompts} prompts · ${s.judge_mode} judge · ${{ github.sha }}*`,
+            ];
+
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner:        context.repo.owner,
+              repo:         context.repo.repo,
+              body:         rows.join('\n'),
+            });
