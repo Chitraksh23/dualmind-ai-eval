@@ -1,9 +1,6 @@
 # 🧠 DualMind — OSS vs Frontier AI Evaluation Platform
 
 > A side-by-side comparison of **Qwen 2.5 (OSS)** vs **Claude Sonnet 4 (Frontier)** across safety, hallucination, and bias dimensions — with a live chat arena and automated evaluation framework.
-
-![Platform Preview](docs/preview.png)
-
 ---
 
 ## 📁 Project Structure
